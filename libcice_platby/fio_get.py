@@ -8,6 +8,7 @@ from datetime import datetime
 import pprint
 
 # Configuration
+config_file = 'config.xml'
 token = "xxxxxxxxxxxxxxxx"
 db_host = 'localhost'
 db_user = 'platby'
@@ -39,17 +40,35 @@ def getFioTransactions( token ):
         data = response.read()
         return data
     except IOError, e: 
-        if hasattr(e, 'code'): # HTTPError 
+        if hasattr(e, 'code'): # HTTPError
             log( 'http error code: ', e.code )
-        elif hasattr(e, 'reason'): # URLError 
+        elif hasattr(e, 'reason'): # URLError
             log( "can't connect, reason: ", e.reason )
         else: 
+            raise
+
+##
+# Get list of new transactions from last check
+def SetTokenLastLoaded( token , last):
+    try:
+        c = httplib.HTTPSConnection("www.fio.cz");
+        c.request("GET","/ib_api/rest/set-last-id/"+token+"/"+last+"/");
+        response = c.getresponse()
+        log( str(response.status)+" "+str(response.reason))
+        data = response.read()
+        return data
+    except IOError, e:
+        if hasattr(e, 'code'): # HTTPError
+            log( 'http error code: ', e.code )
+        elif hasattr(e, 'reason'): # URLError
+            log( "can't connect, reason: ", e.reason )
+        else:
             raise
         
 ##
 # Fake function to simulate receiving list of transactions
 def getFioTransactionFake( token ):
-    fp = open('libcice_platby/test2.xml', "r")
+    fp = open('test2.xml', "r")
     content = fp.read()
     fp.close()
     return content
@@ -151,11 +170,23 @@ def fillLidePlatby( prikaz, lide ):
     return pl
 
 ##
+# mapping tables 'prikazy' + 'transakce' to 'prikazy_transakce'
+def fillPrikazyTransakce(prik_trans):
+    pt = dict()
+    pt['idprikazy'] = prik_trans['idprikazy'];
+    pt['idimport'] = prik_trans['idimport'];
+    pt['idtransakce'] = prik_trans['idtransakce'];
+    pt['datum'] = prik_trans['splatnost'];
+    pt['castka'] = prik_trans['castka'];
+    return pt
+
+
+##
 # Handle misc payments which does not belong to users
 def processSystemSpecificTransactions():
     sql = (' SELECT p.idimport, p.castka, '
                   'p.splatnost, p.idprikazy, '
-                 ' p.typ_transakce '
+                 ' p.typ_transakce, t.idtransakce '
              'FROM prikazy p, transakce t  '
              'WHERE pouzito=0 AND '
                    'p.typ_transakce = t.nazev')
@@ -171,7 +202,17 @@ def processSystemSpecificTransactions():
             log(sql)
         return False
     for row in rows:
-        print row
+       pt = fillPrikazyTransakce(row)
+       ret = mysqlDictInsert("INSERT INTO prikazy_transakce (%s) VALUES (%s)", pt)
+       if ret == 1062:
+           log('Duplicit transaction. Removing.')
+           removeFromPrikazy(pt['idprikazy'])
+           continue;
+       # Paired!
+       if ret == True:
+           setPrikazAsPaired(pt['idprikazy'])
+           continue
+       log("Unknown error on pairing transaction!")
 
 
 ##
@@ -230,7 +271,7 @@ def pairTransaction( prikaz ):
     if user == False :
         log("Cannot find user for variable symbol %s" % prikaz['variabilni_symbol'])
         log(prikaz)
-        return Falsei
+        return False
 
     # Fill data to dict
     l_platba = fillLidePlatby( prikaz, user)
@@ -325,9 +366,24 @@ def mysqlDictInsert( sql, data):
         return e
 
 
+####################################
+## Main script
+####################################
+
+# Read configuration file
+config = ET.parse(config_file)
+token = getvalue(config, "BankToken")
+db_host = getvalue(config, "db/host")
+db_user = getvalue(config, "db/username")
+db_pass = getvalue(config, "db/password")
+db_name = getvalue(config, "db/name")
+
+# Set token TODO remove!!!
+#print(SetTokenLastLoaded(token, "9269249320"))
+
 # Get list of transactions 
-xmldata = getFioTransactionFake(token)
-#xmldata = getFioTransactions(token)
+#xmldata = getFioTransactionFake(token)
+xmldata = getFioTransactions(token)
 # Parse XML
 xmltree = ET.fromstring(xmldata)
 
@@ -336,19 +392,23 @@ account_info = getAccountInfo(xmltree)
 log(account_info)
 
 # Check if there os something to process
-if sum(1 for i in xmltree.iterfind('TransactionList/Transaction')) <= 0:
-    quit() 
+#if sum(1 for i in xmltree.iterfind('TransactionList/Transaction')) <= 0:
+#    quit()
 
 # Open database connection
+#db = MySQLdb.connect(db_host,db_user,db_pass,db_name, use_unicode=True, charset="utf8" )
 db = MySQLdb.connect(db_host,db_user,db_pass,db_name )
 # prepare a cursor object using cursor() method
 cursor = db.cursor(MySQLdb.cursors.DictCursor)
+#cursor.execute("SET NAMES utf8mb4;") #or utf8 or any other charset you want to handle
+#cursor.execute("SET CHARACTER SET utf8mb4;") #same as above
+#cursor.execute("SET character_set_connection=utf8mb4;")
 
-if processTransactions(xmltree) > 0:
-    log("Processing records in 'prikazy'")
-
+#if processTransactions(xmltree) > 0:
+log("Processing records in 'prikazy'")
 processPrikazy()
 
+log("Processing System specific transaction")
 processSystemSpecificTransactions()
  
 
