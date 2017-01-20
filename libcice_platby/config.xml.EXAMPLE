@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<configuration>
+  <BankToken>Blablabla</BankToken>
+  <db>
+    <host>localhost</host>
+    <username></username>
+    <password></password>
+    <name></name>
+  </db>
+</configuration>
